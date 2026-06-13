@@ -1,0 +1,27 @@
+name: Update omg.lol monthly playlist
+
+on:
+  schedule:
+    # Runs daily at 13:00 UTC for the first 8 days of each month.
+    # The script no-ops on days when the playlist already matches, so it
+    # quietly waits for your "MONTH YEAR" playlist to appear, publishes once,
+    # then keeps no-op'ing for the rest of the window.
+    - cron: "0 13 1-8 * *"
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node update-playlist.mjs
+        env:
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_USER_ID: ${{ secrets.SPOTIFY_USER_ID }}
+          OMGLOL_ADDRESS: ${{ secrets.OMGLOL_ADDRESS }}
+          OMGLOL_API_KEY: ${{ secrets.OMGLOL_API_KEY }}
+          PLAYLIST_TZ: America/Chicago
