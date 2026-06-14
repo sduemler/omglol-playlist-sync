@@ -93,8 +93,10 @@ async function findPlaylist(token, name) {
 
 function embedFor(playlist) {
   const id = playlist.id;
+  // Compact player (height 152) to match the EP/album embed elsewhere on the
+  // page. Use height 352 instead for the full-size player with track list.
   return [
-    `<iframe style="border-radius:12px" src="https://open.spotify.com/embed/playlist/${id}?utm_source=generator" width="100%" height="352" frameborder="0" allowfullscreen="" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy"></iframe>`,
+    `<iframe data-testid="embed-iframe" style="border-radius:12px" src="https://open.spotify.com/embed/playlist/${id}?utm_source=generator" width="100%" height="152" frameBorder="0" allowfullscreen="" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy"></iframe>`,
   ].join("\n");
 }
 
