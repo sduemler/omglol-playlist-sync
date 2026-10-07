@@ -1,18 +1,24 @@
 # omg.lol monthly playlist sync
 
-Automatically keeps the "current monthly playlist" section of your
-[omg.lol](https://omg.lol) page pointed at your latest Spotify playlist —
-no manual editing.
+Keeps the "current monthly playlist" section of your
+[omg.lol](https://omg.lol) page pointed at this month's **Apple Music**
+playlist.
 
-Each run it:
+Each month:
 
-1. Works out the current month name, e.g. `June 2026`.
-2. Finds your **public** Spotify playlist with that exact name.
-3. Swaps a fresh Spotify embed into your omg.lol page (only the bit between two
-   marker comments) and publishes.
+1. On the 1st, a GitHub Action opens an issue, **"🎵 October 2026 playlist
+   link?"**, assigned to you, so you get an email and a GitHub Mobile
+   notification.
+2. You reply with the playlist's Apple Music share link. Comment in GitHub, or
+   just reply to the notification email.
+3. A few minutes later the embed between your page's markers is replaced, the
+   link is recorded in [`playlists.json`](playlists.json), and the issue
+   closes itself.
+4. Haven't replied by the 4th? It nudges you once. Never reply, and the page
+   keeps last month's playlist.
 
-It's safe to run repeatedly: if the playlist doesn't exist yet, or the page is
-already correct, it does nothing.
+Apple's embedded player loads the playlist live, so songs you add later in the
+month appear on the page with nothing else to do.
 
 ---
 
@@ -27,72 +33,64 @@ In your omg.lol web page editor, wherever you want the player, add:
 <!-- PLAYLIST:END -->
 ```
 
-The script only ever rewrites the lines **between** these two comments;
-everything else on your page is left untouched. (The comments themselves are
-invisible on the published page.)
+The script only ever rewrites the lines **between** these two comments. The
+comments themselves are invisible on the published page.
 
-### 2. Create a Spotify app
+### 2. Add repo secrets
 
-1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-   and create an app (any name; redirect URI can be `http://localhost`).
-2. Copy the **Client ID** and **Client secret**.
+**Settings → Secrets and variables → Actions → New repository secret**:
 
-Because your monthly playlist is public, that's all the auth needed — no login
-or refresh tokens.
+| Secret name      | Value                               |
+| ---------------- | ----------------------------------- |
+| `OMGLOL_ADDRESS` | the part before `.omg.lol`, e.g. `samd` |
+| `OMGLOL_API_KEY` | from [home.omg.lol/account](https://home.omg.lol/account) |
 
-### 3. Get your other values
+No Apple account or API keys are needed.
 
-- **Spotify user ID** — Spotify → your profile → `...` → Share → Copy link to
-  profile. The ID is the part after `/user/`.
-- **omg.lol API key** — [home.omg.lol/account](https://home.omg.lol/account) → API key.
-- **omg.lol address** — the part before `.omg.lol` (e.g. `samd`).
+### 3. Make sure you'll see the reminder
 
----
-
-## Run it on a schedule (GitHub Actions)
-
-1. Push this folder to a GitHub repo.
-2. In the repo: **Settings → Secrets and variables → Actions → New repository
-   secret**, and add each of:
-
-   | Secret name             | Value                          |
-   | ----------------------- | ------------------------------ |
-   | `SPOTIFY_CLIENT_ID`     | from the Spotify dashboard     |
-   | `SPOTIFY_CLIENT_SECRET` | from the Spotify dashboard     |
-   | `SPOTIFY_USER_ID`       | your Spotify user ID           |
-   | `OMGLOL_ADDRESS`        | e.g. `samd`                    |
-   | `OMGLOL_API_KEY`        | from home.omg.lol/account      |
-
-3. That's it. The workflow in `.github/workflows/update-playlist.yml` runs daily
-   for the first 8 days of each month and can also be triggered manually from the
-   **Actions** tab (**Run workflow**) any time.
-
-The timezone used for the month name is set in the workflow (`PLAYLIST_TZ`,
-default `America/Chicago`). Change it there if needed.
+- github.com → **Settings → Notifications**: email on for "Participating,
+  @mentions and custom".
+- Install **GitHub Mobile** and allow push notifications.
+- To answer by email, reply from an address that's **verified on your GitHub
+  account** (Settings → Emails). Otherwise GitHub drops the reply.
 
 ---
 
-## Test it locally first
+## Getting the link
+
+In Apple Music, open the playlist → **•••** → **Share** → **Copy Link**. It
+looks like `https://music.apple.com/us/playlist/october-2026/pl.u-AbC123`.
+Sharing makes a public copy for the embed to show. Later edits sync to it,
+sometimes after a short delay.
+
+A `music.apple.com/library/...` link won't work; it's private to you. The bot
+tells you if you send one.
+
+---
+
+## The workflows
+
+| Workflow | When | What |
+| --- | --- | --- |
+| **Monthly playlist reminder** (`playlist-reminder.yml`) | daily, days 1–8, or by hand | opens the month's issue, nudges once on day 4, closes last month's unanswered issue |
+| **Playlist reply** (`playlist-reply.yml`) | you comment on a request issue | publishes the first Apple Music playlist link in your comment, then confirms and closes |
+| **Publish playlist** (`playlist-publish.yml`) | by hand | **Actions → Publish playlist → Run workflow**, paste a link. For swapping the link or skipping the issue |
+
+Only **your** comments are acted on, since anyone can comment on a public repo.
+Replying again on a closed issue in the same month swaps the link.
+
+The timezone for "this month" is `America/Chicago`, set by `PLAYLIST_TZ` in
+each workflow.
+
+---
+
+## Test it locally
 
 ```bash
-cp .env.example .env   # then fill in the values
-node --env-file=.env update-playlist.mjs
+cp .env.example .env   # then fill in the omg.lol values
+DRY_RUN=1 PLAYLIST_URL="https://music.apple.com/us/playlist/…/pl.u-…" node --env-file=.env update-playlist.mjs
 ```
 
-Requires Node 20+. No dependencies to install.
-
-> Tip: to test before the month's playlist exists, temporarily rename one of
-> your existing public playlists to the current `MONTH YEAR`, run the script,
-> check your page, then rename it back.
-
----
-
-## Notes / gotchas
-
-- **Spotify embeds use an `<iframe>`.** If omg.lol strips raw HTML from your page
-  and the player doesn't render, switch the `embedFor()` function in
-  `update-playlist.mjs` to a plain markdown link instead — the playlist URL is
-  `playlist.external_urls.spotify`.
-- **Exact name match.** The playlist name must match `MONTH YEAR` exactly
-  (case-insensitive), e.g. `June 2026`. Stray spaces or different formatting
-  won't match.
+`DRY_RUN=1` reads your page and prints the block it would publish, without
+changing anything. Drop it to publish for real.

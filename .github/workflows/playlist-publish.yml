@@ -1,0 +1,49 @@
+name: Publish playlist
+
+# Manual fallback: paste an Apple Music playlist link to put it on the page
+# (e.g. to swap this month's playlist, or if you missed the reminder issue).
+# Normally you just reply to the monthly issue instead (playlist-reply.yml).
+
+on:
+  workflow_dispatch:
+    inputs:
+      playlist_url:
+        description: "Apple Music playlist share link (••• → Share → Copy Link)"
+        required: true
+      month:
+        description: "Month it's for, like 2026-10 (blank = this month)"
+        required: false
+
+permissions:
+  contents: write # commit playlists.json
+  issues: write # close this month's reminder issue
+
+concurrency:
+  group: playlist
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node update-playlist.mjs
+        env:
+          PLAYLIST_URL: ${{ inputs.playlist_url }}
+          PLAYLIST_MONTH: ${{ inputs.month }}
+          PLAYLIST_TZ: America/Chicago
+          OMGLOL_ADDRESS: ${{ secrets.OMGLOL_ADDRESS }}
+          OMGLOL_API_KEY: ${{ secrets.OMGLOL_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Commit playlists.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add playlists.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Record playlist link"
+          git pull --rebase
+          git push

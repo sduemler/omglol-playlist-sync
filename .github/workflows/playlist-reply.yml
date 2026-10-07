@@ -1,0 +1,50 @@
+name: Playlist reply
+
+# Runs when you comment on a monthly playlist-request issue (in GitHub, or by
+# replying to the notification email) and publishes the link in your comment.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write # commit playlists.json
+  issues: write # confirm and close the issue
+
+concurrency:
+  group: playlist
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # The repo is public, so only act on the owner's comments on request issues.
+    if: >-
+      !github.event.issue.pull_request &&
+      contains(github.event.issue.labels.*.name, 'playlist-request') &&
+      github.event.comment.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Comment text is passed only through env vars, never pasted into a shell line.
+      - run: node reply.mjs
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_STATE: ${{ github.event.issue.state }}
+          PLAYLIST_TZ: America/Chicago
+          OMGLOL_ADDRESS: ${{ secrets.OMGLOL_ADDRESS }}
+          OMGLOL_API_KEY: ${{ secrets.OMGLOL_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Commit playlists.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add playlists.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Record playlist link"
+          git pull --rebase
+          git push

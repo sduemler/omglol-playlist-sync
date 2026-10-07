@@ -1,106 +1,98 @@
 // Updates the "current monthly playlist" embed on an omg.lol web page.
 //
 // Flow:
-//   1. Work out the current month name, e.g. "June 2026".
-//   2. Ask Spotify (app-only auth) for the user's public playlists and find the
-//      one whose name matches that month.
-//   3. Read the current omg.lol page, swap in a fresh Spotify embed between the
+//   1. Take an Apple Music playlist share link (PLAYLIST_URL). It can be buried
+//      in other text, e.g. a whole email reply; the first playlist link wins.
+//   2. Read the current omg.lol page, swap in an Apple Music embed between the
 //      <!-- PLAYLIST:START --> / <!-- PLAYLIST:END --> markers, and publish.
+//   3. Record the link for that month in playlists.json (the workflow commits it).
 //
-// Idempotent: if no matching playlist exists yet, or the page already shows the
-// right embed, it exits without changing anything.
+// Apple's embed loads the playlist live, so songs added later in the month show
+// up on the page without another run.
+//
+// Idempotent: if the page already shows the right embed it doesn't republish.
+//
+// Run directly for a manual publish (also what the "Run workflow" button does):
+//   PLAYLIST_URL=<link> node --env-file=.env update-playlist.mjs
+// DRY_RUN=1 prints the new block instead of publishing or writing anything.
 //
 // Requires Node 20+ (uses the built-in fetch). No dependencies.
 
-const {
-  SPOTIFY_CLIENT_ID,
-  SPOTIFY_CLIENT_SECRET,
-  SPOTIFY_USER_ID,
-  OMGLOL_ADDRESS,
-  OMGLOL_API_KEY,
-  PLAYLIST_TZ = "UTC",
-} = process.env;
+import { readFile, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 const START_MARKER = "<!-- PLAYLIST:START -->";
 const END_MARKER = "<!-- PLAYLIST:END -->";
+const HISTORY_FILE = new URL("./playlists.json", import.meta.url);
 
-function requireEnv() {
-  const missing = [
-    "SPOTIFY_CLIENT_ID",
-    "SPOTIFY_CLIENT_SECRET",
-    "SPOTIFY_USER_ID",
-    "OMGLOL_ADDRESS",
-    "OMGLOL_API_KEY",
-  ].filter((k) => !process.env[k]);
-  if (missing.length) {
-    console.error(`Missing required env vars: ${missing.join(", ")}`);
-    process.exit(1);
-  }
+// Apple's playlist player shows the track list at 450px. Shorter heights crop
+// it rather than switching to a compact layout.
+const EMBED_HEIGHT = 450;
+
+export const TZ = process.env.PLAYLIST_TZ || "UTC";
+export const DRY_RUN = !!process.env.DRY_RUN && process.env.DRY_RUN !== "0";
+
+export class UserError extends Error {}
+
+// "2026-10" for the current date in the configured timezone.
+export function currentMonthKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type).value;
+  return `${get("year")}-${get("month")}`;
 }
 
-// "June 2026" for the current date in the configured timezone.
-function currentPlaylistName(date = new Date()) {
+// "2026-10" -> "October 2026"
+export function monthName(key) {
+  const [y, m] = key.split("-").map(Number);
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: PLAYLIST_TZ,
+    timeZone: "UTC",
     month: "long",
     year: "numeric",
-  }).format(date);
+  }).format(new Date(Date.UTC(y, m - 1, 15)));
 }
 
-async function getSpotifyToken() {
-  const basic = Buffer.from(
-    `${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`,
-  ).toString("base64");
-  const res = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials",
-  });
-  if (!res.ok) {
-    throw new Error(`Spotify auth failed (${res.status}): ${await res.text()}`);
+// Find the first public Apple Music playlist link in `text`. Throws a
+// UserError with a helpful message when there isn't one.
+export function parsePlaylistUrl(text = "") {
+  const match = text.match(
+    /https?:\/\/(?:embed\.)?music\.apple\.com\/([a-z]{2})\/playlist\/(?:([^/\s?#<>"')]+)\/)?(pl\.[\w.-]+)/i,
+  );
+  if (match) {
+    const [, storefront, slug = "playlist", id] = match;
+    return {
+      url: `https://music.apple.com/${storefront}/playlist/${slug}/${id}`,
+      embedUrl: `https://embed.music.apple.com/${storefront}/playlist/${slug}/${id}`,
+    };
   }
-  return (await res.json()).access_token;
-}
-
-// Find the user's public playlist whose name matches `name` (case-insensitive).
-async function findPlaylist(token, name) {
-  const target = name.trim().toLowerCase();
-  let url = `https://api.spotify.com/v1/users/${encodeURIComponent(
-    SPOTIFY_USER_ID,
-  )}/playlists?limit=50`;
-
-  while (url) {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      throw new Error(
-        `Spotify playlists fetch failed (${res.status}): ${await res.text()}`,
-      );
-    }
-    const page = await res.json();
-    const match = page.items.find(
-      (p) => p && p.name && p.name.trim().toLowerCase() === target,
+  if (/music\.apple\.com\/library\//i.test(text)) {
+    throw new UserError(
+      "That's a private library link, which only works for you. In Apple Music, " +
+        "open the playlist, tap ••• → Share → Copy Link, and send that instead.",
     );
-    if (match) return match;
-    url = page.next;
   }
-  return null;
+  throw new UserError(
+    "I couldn't find an Apple Music playlist link (music.apple.com/…/playlist/…/pl.…). " +
+      "In Apple Music, open the playlist, tap ••• → Share → Copy Link, and send that.",
+  );
 }
 
-function embedFor(playlist) {
-  const id = playlist.id;
-  // Compact player (height 152) to match the EP/album embed elsewhere on the
-  // page. Use height 352 instead for the full-size player with track list.
-  return [
-    `<iframe data-testid="embed-iframe" style="border-radius:12px" src="https://open.spotify.com/embed/playlist/${id}?utm_source=generator" width="100%" height="152" frameBorder="0" allowfullscreen="" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy"></iframe>`,
-  ].join("\n");
+function embedFor(embedUrl) {
+  return `<iframe allow="autoplay *; encrypted-media *; fullscreen *; clipboard-write" frameborder="0" height="${EMBED_HEIGHT}" style="width:100%;overflow:hidden;border-radius:12px;" sandbox="allow-forms allow-popups allow-same-origin allow-scripts allow-storage-access-by-user-activation allow-top-navigation-by-user-activation" src="${embedUrl}"></iframe>`;
+}
+
+function requireEnv(...keys) {
+  const missing = keys.filter((k) => !process.env[k]);
+  if (missing.length) {
+    throw new Error(`Missing required env vars: ${missing.join(", ")}`);
+  }
 }
 
 async function getWebContent() {
+  const { OMGLOL_ADDRESS, OMGLOL_API_KEY } = process.env;
   const res = await fetch(
     `https://api.omg.lol/address/${encodeURIComponent(OMGLOL_ADDRESS)}/web`,
     { headers: { Authorization: `Bearer ${OMGLOL_API_KEY}` } },
@@ -116,6 +108,7 @@ async function getWebContent() {
 }
 
 async function publishWebContent(content) {
+  const { OMGLOL_ADDRESS, OMGLOL_API_KEY } = process.env;
   const res = await fetch(
     `https://api.omg.lol/address/${encodeURIComponent(OMGLOL_ADDRESS)}/web`,
     {
@@ -144,24 +137,34 @@ function replaceBetweenMarkers(content, block) {
   return `${before}\n${block}\n${after}`;
 }
 
-async function main() {
-  requireEnv();
-
-  const name = currentPlaylistName();
-  console.log(`Looking for playlist named "${name}"...`);
-
-  const token = await getSpotifyToken();
-  const playlist = await findPlaylist(token, name);
-  if (!playlist) {
-    console.log(
-      `No public playlist named "${name}" found yet. Nothing to do.`,
-    );
-    return;
+export async function readHistory() {
+  try {
+    return JSON.parse(await readFile(HISTORY_FILE, "utf8"));
+  } catch (err) {
+    if (err.code === "ENOENT") return {};
+    throw err;
   }
-  console.log(`Found playlist ${playlist.id} ("${playlist.name}").`);
+}
+
+async function recordHistory(monthKey, url) {
+  const history = await readHistory();
+  history[monthKey] = url;
+  const sorted = Object.fromEntries(
+    Object.entries(history).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  await writeFile(HISTORY_FILE, `${JSON.stringify(sorted, null, 2)}\n`);
+}
+
+// Publish the playlist linked in `input` to the page and record it for
+// `monthKey`. Returns { url, changed }.
+export async function publishPlaylist(input, monthKey = currentMonthKey()) {
+  requireEnv("OMGLOL_ADDRESS", "OMGLOL_API_KEY");
+  const { url, embedUrl } = parsePlaylistUrl(input);
+  console.log(`Playlist for ${monthName(monthKey)}: ${url}`);
 
   const content = await getWebContent();
-  const updated = replaceBetweenMarkers(content, embedFor(playlist));
+  const block = embedFor(embedUrl);
+  const updated = replaceBetweenMarkers(content, block);
   if (updated === null) {
     throw new Error(
       `Could not find ${START_MARKER} / ${END_MARKER} markers on the omg.lol page. ` +
@@ -169,16 +172,45 @@ async function main() {
     );
   }
 
-  if (updated === content) {
-    console.log("Page already up to date. Nothing to publish.");
-    return;
+  if (DRY_RUN) {
+    console.log("DRY_RUN: would put this between the markers:\n" + block);
+    console.log(updated === content ? "(page already matches)" : "(page would change)");
+    return { url, changed: updated !== content };
   }
 
-  await publishWebContent(updated);
-  console.log("Published updated playlist embed to omg.lol. ✅");
+  const changed = updated !== content;
+  if (changed) {
+    await publishWebContent(updated);
+    console.log("Published updated playlist embed to omg.lol. ✅");
+  } else {
+    console.log("Page already up to date. Nothing to publish.");
+  }
+  await recordHistory(monthKey, url);
+  return { url, changed };
 }
 
-main().catch((err) => {
-  console.error(err.message || err);
-  process.exit(1);
-});
+async function main() {
+  const monthKey = process.env.PLAYLIST_MONTH || currentMonthKey();
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+    throw new UserError(`PLAYLIST_MONTH must look like 2026-10, got "${monthKey}".`);
+  }
+  const { url } = await publishPlaylist(process.env.PLAYLIST_URL, monthKey);
+
+  // When run from GitHub Actions, close this month's reminder issue so it
+  // stops nagging.
+  if (!DRY_RUN && process.env.GITHUB_TOKEN) {
+    const { closeRequestIssues } = await import("./github.mjs");
+    await closeRequestIssues(
+      (month) => month === monthKey,
+      `Published via a manual run: ${url} ✅`,
+      "completed",
+    );
+  }
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(err.message || err);
+    process.exit(1);
+  });
+}

@@ -1,0 +1,29 @@
+name: Monthly playlist reminder
+
+on:
+  schedule:
+    # Daily at 13:00 UTC (8am Chicago in summer) on days 1–8. Day 1 opens the
+    # "<Month Year> playlist link?" issue, day 4 nudges once if it's still
+    # unanswered, and the rest are no-ops. GitHub often runs these late.
+    - cron: "0 13 1-8 * *"
+  workflow_dispatch: {} # run by hand to test, or to open the issue right away
+
+permissions:
+  issues: write
+
+concurrency:
+  group: playlist
+  cancel-in-progress: false
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node remind.mjs
+        env:
+          PLAYLIST_TZ: America/Chicago
+          GITHUB_TOKEN: ${{ github.token }}
